@@ -1,10 +1,10 @@
-#Spotify Mood Analyzer#
+# Spotify Mood Analyzer #
 
-##Overview##
+## Overview ##
 
 Spotify Mood Analyzer is a project that uses Spotify's Web API to collect and analyze your recent listening history, derive mood information from the audio features of your songs, and provide insights into your musical preferences and mood trends over time. By using data like valence, energy, and danceability, it can determine your general mood based on what you're listening to.
 
-##Features##
+## Features ##
 
 * Spotify Authentication: Uses Spotify API to authenticate and access your listening data.
 
