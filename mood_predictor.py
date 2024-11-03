@@ -20,7 +20,7 @@ def authenticate_spotify():
         client_id=os.getenv("SPOTIFY_CLIENT_ID"),
         client_secret=os.getenv("SPOTIFY_CLIENT_SECRET"),
         redirect_uri=os.getenv("SPOTIFY_REDIRECT_URI"),
-        scope="user-read-recently-played user-library-read"
+        scope="user-read-recently-played user-library-read playlist-read-private"
     ))
 
 # Data Collection
@@ -52,7 +52,7 @@ def preprocess_data(features_df, track_names, timestamps):
     daily_data = features_df.select_dtypes(include=[np.number]).resample('D').mean()
 
     # Mood Labeling
-    daily_data['mood_label'] = np.where(daily_data['valence'] > 0.5, 'positive', 'negative')
+    daily_data['mood_label'] = daily_data.apply(lambda row: classify_mood(row), axis=1)
 
     # Feature Engineering
     daily_data['energy_median'] = features_df['energy'].resample('D').median()
@@ -91,14 +91,15 @@ def build_and_evaluate_model(daily_data):
     return best_model
 
 # User Interaction Options
-def user_options(daily_data, data):
+def user_options(daily_data, data, sp):
     while True:
         print("\nSelect an option:")
         print("1. See overall mood trend")
         print("2. Check your current mood")
         print("3. Look at your mood based on songs you listened to last week")
         print("4. See your top played songs in the last week and their mood")
-        print("5. Exit")
+        print("5. Analyze the mood of a playlist")
+        print("6. Exit")
         choice = input("Enter your choice: ")
 
         if choice == '1':
@@ -110,6 +111,8 @@ def user_options(daily_data, data):
         elif choice == '4':
             top_played_songs_last_week(data)
         elif choice == '5':
+            analyze_playlist_mood(sp)
+        elif choice == '6':
             break
         else:
             print("Invalid choice. Please try again.")
@@ -158,7 +161,7 @@ def top_played_songs_last_week(data):
     top_tracks = last_week_tracks['track_name'].value_counts().head(10)
     top_tracks_data = last_week_tracks[last_week_tracks['track_name'].isin(top_tracks.index)]
     top_tracks_data = top_tracks_data.copy()
-    top_tracks_data['mood_label'] = np.where(top_tracks_data['valence'] > 0.5, 'positive', 'negative')
+    top_tracks_data['mood_label'] = top_tracks_data.apply(lambda row: classify_mood(row), axis=1)
 
     print("\nTop Played Songs in Last Week and Their Mood:")
     for track_name, count in top_tracks.items():
@@ -168,6 +171,73 @@ def top_played_songs_last_week(data):
     # Save top played songs to CSV
     top_tracks_data[['track_name', 'mood_label']].to_csv('top_played_songs_last_week.csv', index=False)
 
+def analyze_playlist_mood(sp):
+    playlist_name = input("Enter the name of the playlist you want to analyze: ")
+    playlists = sp.current_user_playlists(limit=50)['items']
+
+    playlist_id = None
+    for playlist in playlists:
+        if playlist['name'].lower() == playlist_name.lower():
+            playlist_id = playlist['id']
+            break
+
+    if not playlist_id:
+        print("Playlist not found. Please check the name and try again.")
+        return
+
+    # Retrieve tracks from the playlist
+    tracks = sp.playlist_tracks(playlist_id)['items']
+    track_ids = [track['track']['id'] for track in tracks]
+    track_names = [track['track']['name'] for track in tracks]
+
+    # Retrieve Audio Features
+    features_df = retrieve_audio_features(sp, track_ids)
+    features_df['track_name'] = track_names
+
+    # Handle missing values
+    features_df = features_df.dropna()
+
+    # Analyze mood based on valence
+    avg_valence = features_df['valence'].mean()
+    avg_energy = features_df['energy'].mean()
+
+    if avg_valence > 0.7 and avg_energy > 0.6:
+        print(f"The mood of the playlist '{playlist_name}' is mostly happy.")
+    elif avg_valence > 0.5 and avg_energy <= 0.6:
+        print(f"The mood of the playlist '{playlist_name}' is mostly calm.")
+    elif avg_valence <= 0.5 and avg_energy < 0.4:
+        print(f"The mood of the playlist '{playlist_name}' is mostly relaxed.")
+    elif avg_valence <= 0.5 and avg_energy >= 0.4 and features_df['tempo'].mean() < 100:
+        print(f"The mood of the playlist '{playlist_name}' is mostly melancholic.")
+    else:
+        print(f"The mood of the playlist '{playlist_name}' is mostly neutral.")
+
+    # Provide context on why the mood was this way
+    context = features_df[['danceability', 'energy', 'valence', 'tempo']].mean()
+    print("\nMood context for the playlist:")
+    print(f"Average Danceability: {context['danceability']:.2f}")
+    print(f"Average Energy: {context['energy']:.2f}")
+    print(f"Average Valence: {context['valence']:.2f}")
+    print(f"Average Tempo: {context['tempo']:.2f}")
+
+
+# Helper Function for Mood Classification
+def classify_mood(row):
+    valence = row['valence']
+    energy = row['energy']
+    tempo = row['tempo']
+
+    if valence > 0.7 and energy > 0.6:
+        return 'happy'
+    elif valence > 0.5 and energy <= 0.6:
+        return 'calm'
+    elif valence <= 0.5 and energy < 0.4:
+        return 'relaxed'
+    elif valence <= 0.5 and energy >= 0.4 and tempo < 100:
+        return 'melancholic'
+    else:
+        return 'neutral'
+
 # Main Execution
 if __name__ == "__main__":
     sp = authenticate_spotify()
@@ -175,28 +245,34 @@ if __name__ == "__main__":
     features_df = retrieve_audio_features(sp, track_ids)
     data, daily_data = preprocess_data(features_df, track_names, timestamps)
     model = build_and_evaluate_model(daily_data)
-    user_options(daily_data, data)
+    user_options(daily_data, data, sp)
 
 # General Tips
 # Store data locally for repeated analysis
 daily_data.to_csv('daily_data.csv')
 activity_summary = data.groupby([data.index.date, 'track_name']).size().reset_index(name='listening_count')
 activity_summary.to_csv('activity_summary.csv')
+# TODO:
+# 1. Advanced Data Visualization (Objective #3):
+#    - Upgrade current plots to interactive charts using Plotly or Dash.
+#    - Add visual insights, such as bar charts for playlist moods or heatmaps for listening frequency.
 
-# Automate data collection for regular intervals
-# TODO: Set up a scheduler (e.g., cron job) to run data collection periodically
+# 2. Model Enhancement (Objective #1):
+#    - Add more features to the model, such as time-based features (e.g., day of the week).
+#    - Implement feature selection to determine which features impact mood prediction the most.
+#    - Conduct hyperparameter tuning using additional techniques like RandomizedSearchCV.
 
-# Ensure data privacy and ethical considerations
-# TODO: Encrypt stored data and ensure access control policies are in place
+# 3. User Experience Improvement (Objective #5):
+#    - Add CLI improvements, such as more descriptive prompts and error handling.
+#    - Implement a user-friendly GUI (using Tkinter or PyQt) to replace the CLI for easier navigation.
 
-# Instructions for Secure Setup
-# - Create a .env file in the root of your project with the following variables:
-#   SPOTIFY_CLIENT_ID=your_client_id
-#   SPOTIFY_CLIENT_SECRET=your_client_secret
-#   SPOTIFY_REDIRECT_URI=your_redirect_uri
-# - Add .env to your .gitignore file to avoid exposing sensitive credentials
+# 4. Scalability and Data Management (Objective #2):
+#    - Integrate SQLite to store user listening history and mood data, allowing for trend analysis over months.
+#    - Update the data collection to store daily snapshots in the database.
 
-# Next Steps
-# - Define specific objectives for the project
-# - Set milestones and gather initial data for testing
-# - Build initial models and iterate based on findings
+# 5. Automation (Objective #6):
+#    - Automate data collection by setting up a scheduled job to periodically update user listening history.
+#    - Deploy the project (perhaps on a cloud platform like Heroku) for easy access across devices.
+
+# 6. Advanced Mood Analysis:
+#    - Use clustering (e.g., K-means) to group songs and moods, allowing the user to see if their playlists have distinct mood clusters.
